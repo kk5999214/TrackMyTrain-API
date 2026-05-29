@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -40,21 +40,20 @@ async def fetch_stations_from_r2():
                 STATIONS_CACHE = []
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
-    """Health check endpoint for UptimeRobot and browser landing page."""
-    return """
-    <html>
-        <head>
-            <title>TrackMyTrain API</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-        </head>
-        <body style="background-color: #0d1117; color: #58a6ff; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
-            <h1 style="font-size: 2rem; text-align: center;">🚀 TrackMyTrain api is live</h1>
-            <p style="font-size: 1.2rem; color: #8b949e; text-align: center;">Developer : BITTU_DEV</p>
-        </body>
-    </html>
-    """
+    """Health check endpoint returning a structured JSON response."""
+    return {
+        "success": True,
+        "message": "TrackMyTrain API is live 🚂",
+        "developer": "BITTU_DEV",
+        "status": "online",
+        "endpoints": {
+            "search": "/api/search?q={query}",
+            "route": "/api/trains/between-stations?from={code}&to={code}",
+            "live_status": "/api/trains/live-status?trainNo={number}"
+        }
+    }
 
 
 @app.get("/api/search")
