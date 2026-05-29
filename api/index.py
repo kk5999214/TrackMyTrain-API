@@ -1,10 +1,9 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import asyncio
 
-app = FastAPI(title="TMT Master API")
+app = FastAPI(title="TrackMyTrain Master API")
 
 # Allow your frontend/bot to access the API without CORS errors
 app.add_middleware(
@@ -39,6 +38,23 @@ async def fetch_stations_from_r2():
                 print(f"R2 Fetch Error: {e}")
                 # Fallback to empty to prevent hard crash
                 STATIONS_CACHE = []
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Health check endpoint for UptimeRobot and browser landing page."""
+    return """
+    <html>
+        <head>
+            <title>TrackMyTrain API</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <body style="background-color: #0d1117; color: #58a6ff; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+            <h1 style="font-size: 2rem; text-align: center;">🚀 TrackMyTrain api is live</h1>
+            <p style="font-size: 1.2rem; color: #8b949e; text-align: center;">Developer : BITTU_DEV</p>
+        </body>
+    </html>
+    """
 
 
 @app.get("/api/search")
@@ -95,4 +111,3 @@ async def live_status(trainNo: str):
             return JSONResponse(status_code=504, content={"success": False, "message": "Upstream API timeout"})
         except Exception as e:
             return JSONResponse(status_code=500, content={"success": False, "message": f"Proxy error: {str(e)}"})
-          
