@@ -17,11 +17,21 @@ app.add_middleware(
 STATIONS_CACHE = []
 TRAINS_CACHE = []
 TARGET_API = "https://whereismytrain.org.in/api"
+PNR_API = "https://railsinfo-services.makemytrip.com/api/rails/pnr/currentstatus/v1"
 
+# Stealth headers for WhereIsMyTrain
 STEALTH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "Referer": "https://whereismytrain.org.in/"
+}
+
+# Stealth headers for MakeMyTrip
+MMT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Content-Type": "application/json",
+    "Origin": "https://www.makemytrip.com",
+    "Referer": "https://www.makemytrip.com/"
 }
 
 async def fetch_data_from_r2():
@@ -61,7 +71,7 @@ async def root():
             "search": "/api/search?type={type}&q={query}&limit={limit}",
             "route": "/api/trains/between-stations?from={code}&to={code}",
             "live_status": "/api/trains/live-status?trainNo={number}",
-            "surprise": "Pending unlock 💀"
+            "pnr_status": "/api/pnr-status?pnr={pnr_number}"
         }
     }
 
@@ -77,9 +87,7 @@ async def search(type: str = "station", q: str = "", limit: int = 8):
     if not clean_q:
         return {"success": True, "data": results, "total": 0, "query": q, "type": type}
 
-    # -- STATION SEARCH LOGIC --
     if type == "station":
-        # Bug Fix: If frontend sends "Howrah Jn (HWH)", extract just "hwh"
         if "(" in clean_q and ")" in clean_q:
             start = clean_q.find("(") + 1
             end = clean_q.find(")")
@@ -91,10 +99,8 @@ async def search(type: str = "station", q: str = "", limit: int = 8):
                 if len(results) >= limit:
                     break
 
-    # -- TRAIN SEARCH LOGIC --
     elif type == "train":
         for tr in TRAINS_CACHE:
-            # Allows searching by either 5-digit number or train name
             if clean_q in str(tr.get("number", "")).lower() or clean_q in str(tr.get("name", "")).lower():
                 results.append(tr)
                 if len(results) >= limit:
@@ -111,7 +117,6 @@ async def search(type: str = "station", q: str = "", limit: int = 8):
 
 @app.get("/api/trains/between-stations")
 async def between_stations(from_station: str = Query(..., alias="from"), to_station: str = Query(..., alias="to")):
-    """Proxy for routing logic."""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{TARGET_API}/trains/between-stations?from={from_station}&to={to_station}"
@@ -125,7 +130,6 @@ async def between_stations(from_station: str = Query(..., alias="from"), to_stat
 
 @app.get("/api/trains/live-status")
 async def live_status(trainNo: str):
-    """Proxy for real-time tracking."""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{TARGET_API}/trains/live-status?trainNo={trainNo}"
@@ -133,5 +137,36 @@ async def live_status(trainNo: str):
             return response.json()
         except httpx.TimeoutException:
             return JSONResponse(status_code=504, content={"success": False, "message": "Upstream API timeout"})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"success": False, "message": f"Proxy error: {str(e)}"})
+
+
+@app.get("/api/pnr-status")
+async def get_pnr_status(pnr: str):
+    """Translates a simple GET request into MMT's required POST payload."""
+    # Basic validation to ensure the PNR is 10 digits
+    if not pnr.isdigit() or len(pnr) != 10:
+        return JSONResponse(status_code=400, content={"success": False, "message": "Invalid PNR Number. Must be 10 digits."})
+
+    payload = {
+        "pnrID": pnr,
+        "trackingParams": {
+            "affiliateCode": "MMT001",
+            "channelCode": "PWA"
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # We send a POST request, but your bot only needs to send a GET request!
+            response = await client.post(PNR_API, json=payload, headers=MMT_HEADERS, timeout=15.0)
+            
+            # Wrap MMT's response inside our standard success format
+            return {
+                "success": True,
+                "data": response.json()
+            }
+        except httpx.TimeoutException:
+            return JSONResponse(status_code=504, content={"success": False, "message": "MakeMyTrip API timeout"})
         except Exception as e:
             return JSONResponse(status_code=500, content={"success": False, "message": f"Proxy error: {str(e)}"})
