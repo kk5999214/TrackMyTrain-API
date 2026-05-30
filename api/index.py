@@ -2,7 +2,6 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import asyncio
 
 app = FastAPI(title="TrackMyTrain Master API")
 
@@ -19,19 +18,11 @@ TRAINS_CACHE = []
 TARGET_API = "https://whereismytrain.org.in/api"
 PNR_API = "https://railsinfo-services.makemytrip.com/api/rails/pnr/currentstatus/v1"
 
-# Stealth headers for WhereIsMyTrain
+# Stealth headers for WhereIsMyTrain (Desktop Bypass)
 STEALTH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "Referer": "https://whereismytrain.org.in/"
-}
-
-# Stealth headers for MakeMyTrip
-MMT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Content-Type": "application/json",
-    "Origin": "https://www.makemytrip.com",
-    "Referer": "https://www.makemytrip.com/"
 }
 
 async def fetch_data_from_r2():
@@ -143,8 +134,7 @@ async def live_status(trainNo: str):
 
 @app.get("/api/pnr-status")
 async def get_pnr_status(pnr: str):
-    """Translates a simple GET request into MMT's required POST payload."""
-    # Basic validation to ensure the PNR is 10 digits
+    """Translates a simple GET request into MMT's required POST payload with WAF bypass."""
     if not pnr.isdigit() or len(pnr) != 10:
         return JSONResponse(status_code=400, content={"success": False, "message": "Invalid PNR Number. Must be 10 digits."})
 
@@ -156,17 +146,27 @@ async def get_pnr_status(pnr: str):
         }
     }
 
-    async with httpx.AsyncClient() as client:
+    # The Magic Trick: Force HTTP/2 to bypass Akamai/Cloudflare TLS fingerprinting
+    async with httpx.AsyncClient(http2=True) as client:
         try:
-            # We send a POST request, but your bot only needs to send a GET request!
-            response = await client.post(PNR_API, json=payload, headers=MMT_HEADERS, timeout=15.0)
+            # Pretend to be an Android mobile app instead of a Desktop browser
+            mobile_headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 7 Pro Build/TQ3A.230705.001.B4)", 
+                "Accept-Encoding": "gzip, deflate, br"
+            }
             
-            # Wrap MMT's response inside our standard success format
+            # We send a POST request, but your bot only needs to send a GET request!
+            response = await client.post(PNR_API, json=payload, headers=mobile_headers, timeout=10.0)
+            
+            if response.status_code != 200:
+                return JSONResponse(status_code=response.status_code, content={"success": False, "message": f"Blocked by upstream WAF. Status: {response.status_code}"})
+
             return {
                 "success": True,
                 "data": response.json()
             }
         except httpx.TimeoutException:
-            return JSONResponse(status_code=504, content={"success": False, "message": "MakeMyTrip API timeout"})
+            return JSONResponse(status_code=504, content={"success": False, "message": "MakeMyTrip API timeout (WAF Tarpit)"})
         except Exception as e:
             return JSONResponse(status_code=500, content={"success": False, "message": f"Proxy error: {str(e)}"})
