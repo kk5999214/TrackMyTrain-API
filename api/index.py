@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import asyncio
 
 app = FastAPI(title="TrackMyTrain Master API")
 
@@ -12,7 +13,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global memory caches for Vercel edge
 STATIONS_CACHE = []
+TRAINS_CACHE = []
 TARGET_API = "https://whereismytrain.org.in/api"
 
 STEALTH_HEADERS = {
@@ -21,58 +24,82 @@ STEALTH_HEADERS = {
     "Referer": "https://whereismytrain.org.in/"
 }
 
-async def fetch_stations_from_r2():
-    global STATIONS_CACHE
-    if not STATIONS_CACHE:
-        async with httpx.AsyncClient() as client:
+async def fetch_data_from_r2():
+    """Concurrently fetches both master databases on cold start."""
+    global STATIONS_CACHE, TRAINS_CACHE
+    
+    async with httpx.AsyncClient() as client:
+        if not STATIONS_CACHE:
             try:
-                response = await client.get("https://cdn.bittu.me/TrackMyTrain/stations.json", timeout=10.0)
-                if response.status_code == 200:
-                    STATIONS_CACHE = response.json().get("data", [])
+                res_st = await client.get("https://cdn.bittu.me/TrackMyTrain/stations.json", timeout=10.0)
+                if res_st.status_code == 200:
+                    STATIONS_CACHE = res_st.json().get("data", [])
             except Exception as e:
-                print(f"R2 Fetch Error: {e}")
+                print(f"Stations Fetch Error: {e}")
                 STATIONS_CACHE = []
+                
+        if not TRAINS_CACHE:
+            try:
+                res_tr = await client.get("https://cdn.bittu.me/TrackMyTrain/trains.json", timeout=10.0)
+                if res_tr.status_code == 200:
+                    TRAINS_CACHE = res_tr.json().get("data", [])
+            except Exception as e:
+                print(f"Trains Fetch Error: {e}")
+                TRAINS_CACHE = []
 
 
 @app.get("/")
+@app.head("/")
 async def root():
+    """Health check endpoint strictly for keep-alive pings."""
     return {
         "success": True,
         "message": "TrackMyTrain API is live 🚂",
         "developer": "BITTU_DEV",
         "status": "online",
         "endpoints": {
-            "search": "/api/search?type=station&q={query}&limit={limit}",
+            "search": "/api/search?type={type}&q={query}&limit={limit}",
             "route": "/api/trains/between-stations?from={code}&to={code}",
-            "live_status": "/api/trains/live-status?trainNo={number}"
+            "live_status": "/api/trains/live-status?trainNo={number}",
+            "surprise": "Pending unlock 💀"
         }
     }
 
 
 @app.get("/api/search")
-async def search_stations(type: str = "station", q: str = "", limit: int = 8):
-    """
-    Exact match for: /api/search?type=station&q=howr&limit=8
-    """
-    await fetch_stations_from_r2()
+async def search(type: str = "station", q: str = "", limit: int = 8):
+    """Zero-latency autocomplete routing between the two offline datasets."""
+    await fetch_data_from_r2()
     
     clean_q = q.lower().strip()
-    
-    if "(" in clean_q and ")" in clean_q:
-        start = clean_q.find("(") + 1
-        end = clean_q.find(")")
-        clean_q = clean_q[start:end].strip()
-
     results = []
-    if clean_q:
+    
+    if not clean_q:
+        return {"success": True, "data": results, "total": 0, "query": q, "type": type}
+
+    # -- STATION SEARCH LOGIC --
+    if type == "station":
+        # Bug Fix: If frontend sends "Howrah Jn (HWH)", extract just "hwh"
+        if "(" in clean_q and ")" in clean_q:
+            start = clean_q.find("(") + 1
+            end = clean_q.find(")")
+            clean_q = clean_q[start:end].strip()
+
         for st in STATIONS_CACHE:
-            if clean_q in st.get("code", "").lower() or clean_q in st.get("name", "").lower():
+            if clean_q in str(st.get("code", "")).lower() or clean_q in str(st.get("name", "")).lower():
                 results.append(st)
-                # Strictly enforce the limit parameter
                 if len(results) >= limit:
                     break
 
-    # Perfectly mimics the original JSON response
+    # -- TRAIN SEARCH LOGIC --
+    elif type == "train":
+        for tr in TRAINS_CACHE:
+            # Allows searching by either 5-digit number or train name
+            if clean_q in str(tr.get("number", "")).lower() or clean_q in str(tr.get("name", "")).lower():
+                results.append(tr)
+                if len(results) >= limit:
+                    break
+
     return {
         "success": True, 
         "data": results, 
@@ -84,6 +111,7 @@ async def search_stations(type: str = "station", q: str = "", limit: int = 8):
 
 @app.get("/api/trains/between-stations")
 async def between_stations(from_station: str = Query(..., alias="from"), to_station: str = Query(..., alias="to")):
+    """Proxy for routing logic."""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{TARGET_API}/trains/between-stations?from={from_station}&to={to_station}"
@@ -97,6 +125,7 @@ async def between_stations(from_station: str = Query(..., alias="from"), to_stat
 
 @app.get("/api/trains/live-status")
 async def live_status(trainNo: str):
+    """Proxy for real-time tracking."""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{TARGET_API}/trains/live-status?trainNo={trainNo}"
